@@ -1,15 +1,158 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { getChatCompletion, generateProgramSummary } from "./openai";
+import { insertConversationSchema, insertMessageSchema } from "@shared/schema";
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // put application routes here
-  // prefix all routes with /api
+  // Get all conversations
+  app.get("/api/conversations", async (_req, res) => {
+    try {
+      const conversations = await storage.getConversations();
+      res.json(conversations);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
 
-  // use storage to perform CRUD operations on the storage interface
-  // e.g. storage.insertUser(user) or storage.getUserByUsername(username)
+  // Get a specific conversation
+  app.get("/api/conversations/:id", async (req, res) => {
+    try {
+      const conversation = await storage.getConversation(req.params.id);
+      if (!conversation) {
+        return res.status(404).json({ error: "대화를 찾을 수 없습니다" });
+      }
+      res.json(conversation);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Create a new conversation
+  app.post("/api/conversations", async (req, res) => {
+    try {
+      const validated = insertConversationSchema.parse(req.body);
+      const conversation = await storage.createConversation(validated);
+      res.status(201).json(conversation);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // Delete a conversation
+  app.delete("/api/conversations/:id", async (req, res) => {
+    try {
+      const deleted = await storage.deleteConversation(req.params.id);
+      if (!deleted) {
+        return res.status(404).json({ error: "대화를 찾을 수 없습니다" });
+      }
+      res.status(204).send();
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get messages for a conversation
+  app.get("/api/messages", async (req, res) => {
+    try {
+      const conversationId = req.query.conversationId as string;
+      if (!conversationId) {
+        return res.status(400).json({ error: "conversationId가 필요합니다" });
+      }
+      
+      const messages = await storage.getMessages(conversationId);
+      res.json(messages);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Chat endpoint - send message and get AI response
+  app.post("/api/chat", async (req, res) => {
+    try {
+      const { conversationId, message } = req.body;
+
+      if (!conversationId || !message) {
+        return res.status(400).json({ error: "conversationId와 message가 필요합니다" });
+      }
+
+      // Verify conversation exists
+      const conversation = await storage.getConversation(conversationId);
+      if (!conversation) {
+        return res.status(404).json({ error: "대화를 찾을 수 없습니다" });
+      }
+
+      // Save user message
+      const userMessage = await storage.createMessage({
+        conversationId,
+        role: "user",
+        content: message,
+      });
+
+      // Get conversation history
+      const history = await storage.getMessages(conversationId);
+      const conversationMessages = history.map((msg) => ({
+        role: msg.role,
+        content: msg.content,
+      }));
+
+      // Get AI response
+      const aiResponse = await getChatCompletion(conversationMessages);
+
+      // Save AI message
+      const aiMessage = await storage.createMessage({
+        conversationId,
+        role: "assistant",
+        content: aiResponse,
+      });
+
+      res.json({
+        message: userMessage,
+        reply: aiMessage,
+      });
+    } catch (error: any) {
+      console.error("Chat error:", error);
+      res.status(500).json({ error: error.message || "메시지 처리 중 오류가 발생했습니다" });
+    }
+  });
+
+  // Generate program summary
+  app.post("/api/summary", async (req, res) => {
+    try {
+      const { conversationId } = req.body;
+
+      if (!conversationId) {
+        return res.status(400).json({ error: "conversationId가 필요합니다" });
+      }
+
+      // Verify conversation exists
+      const conversation = await storage.getConversation(conversationId);
+      if (!conversation) {
+        return res.status(404).json({ error: "대화를 찾을 수 없습니다" });
+      }
+
+      // Get conversation history
+      const history = await storage.getMessages(conversationId);
+      
+      if (history.length === 0) {
+        return res.status(400).json({ error: "대화 내용이 없습니다" });
+      }
+
+      const conversationMessages = history.map((msg) => ({
+        role: msg.role,
+        content: msg.content,
+      }));
+
+      // Generate summary
+      const summary = await generateProgramSummary(conversationMessages);
+
+      res.json({ summary });
+    } catch (error: any) {
+      console.error("Summary generation error:", error);
+      res.status(500).json({ error: error.message || "요약 생성 중 오류가 발생했습니다" });
+    }
+  });
 
   const httpServer = createServer(app);
-
   return httpServer;
 }

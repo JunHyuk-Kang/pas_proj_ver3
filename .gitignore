@@ -4,3 +4,12 @@ dist
 server/public
 vite.config.ts.*
 *.tar.gz
+.env
+.vercel
+*.db
+*.db-shm
+*.db-wal
+.claude/
+.local/
+nul
+replit.md
